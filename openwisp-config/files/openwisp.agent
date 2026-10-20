@@ -2,6 +2,10 @@
 # shellcheck disable=SC2039
 # shellcheck disable=SC3043
 
+# Ignore SIGUSR1/USR2 until their handlers are installed below: under the
+# default disposition they terminate the agent while it is still starting up.
+trap "" USR1 USR2
+
 # parse options
 while [ -n "$1" ]; do
 	case "$1" in
@@ -935,6 +939,14 @@ handle_sigusr2() {
 	rm -f "$CONFIGURATION_CHECKSUM" "$PERSISTENT_CHECKSUM"
 }
 
+# Install the SIGUSR1/USR2 handlers once, before registration, bootup delay and
+# the first cycle. They used to be set only around the interval sleep, so the
+# SIGUSR1 that openwisp.hotplug sends on management interface ifup, which at
+# boot arrives during the bootup delay or the first configuration apply, killed
+# the agent.
+trap handle_sigusr1 USR1
+trap handle_sigusr2 USR2
+
 # ensure both UUID and KEY are defined
 # otherwise perform registration
 if [ -z "$UUID" ] || [ -z "$KEY" ]; then
@@ -990,13 +1002,7 @@ while true; do
 	fi
 	env -i ACTION="end-of-cycle" /sbin/hotplug-call openwisp
 
-	# handle SIGUSR1 to interrupt sleep
-	trap handle_sigusr1 USR1
-	# handle SIGUSR2 to force downloading and applying config again
-	trap handle_sigusr2 USR2
+	# SIGUSR1/USR2 interrupt this sleep, the next cycle starts immediately
 	sleep "$INTERVAL" &
 	wait $!
-	# ignore SIGUSR1 and SIGUSR2 signals again
-	trap "" USR1
-	trap "" USR2
 done
