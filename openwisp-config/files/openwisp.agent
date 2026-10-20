@@ -6,6 +6,20 @@
 # default disposition they terminate the agent while it is still starting up.
 trap "" USR1 USR2
 
+# Run a command with SIGUSR1/USR2 ignored. The signals that are meant for the
+# agent also reach its children: openwisp-controller sends SIGUSR1 to every
+# process matching "openwisp" and "config" (ps | grep), which includes
+# openwisp-update-config, openwisp-reload-config and the curl download of
+# "download-config". A child with the default disposition dies: an interrupted
+# openwisp-update-config fails with exit code 138 and the configuration backup
+# is restored. Ignored signals stay ignored across exec.
+without_sigusr() {
+	(
+		trap "" USR1 USR2
+		exec "$@"
+	)
+}
+
 # parse options
 while [ -n "$1" ]; do
 	case "$1" in
@@ -519,7 +533,7 @@ apply_configuration() {
 	# store unmanaged config (if enabled)
 	call_store_unmanaged
 	# update local configuration
-	/usr/sbin/openwisp-update-config --conf="$1" --merge="$MERGE_CONFIG" >"$UPDATE_CONFIG_LOG" 2>&1
+	without_sigusr /usr/sbin/openwisp-update-config --conf="$1" --merge="$MERGE_CONFIG" >"$UPDATE_CONFIG_LOG" 2>&1
 	local exit_code=$?
 	# restore unmanaged configurations
 	call_restore_unmanaged
@@ -539,7 +553,7 @@ apply_configuration() {
 	# call pre-reload-hook
 	pre_reload_hook
 	# reload changes and wait $POST_RELOAD_DELAY
-	/usr/sbin/openwisp-reload-config
+	without_sigusr /usr/sbin/openwisp-reload-config
 	sleep "$POST_RELOAD_DELAY"
 	# send post-reload hotplug event
 	env -i ACTION="post-reload" /sbin/hotplug-call openwisp
@@ -764,7 +778,8 @@ download_configuration() {
 	logger "Downloading configuration from controller..." \
 		-t openwisp \
 		-p daemon.info
-	$FETCH_COMMAND --fail "$CONFIGURATION_URL" -o "$CONFIGURATION_ARCHIVE"
+	# shellcheck disable=SC2086
+	without_sigusr $FETCH_COMMAND --fail "$CONFIGURATION_URL" -o "$CONFIGURATION_ARCHIVE"
 	local exit_code=$?
 	if [ "$exit_code" -ne "0" ]; then
 		logger -s "Failed to connect to controller while downloading new config: curl exit code $exit_code" \
@@ -868,7 +883,7 @@ restore_backup() {
 	# restores backup created in backup_configuration() function
 	sysupgrade -r $CONFIGURATION_BACKUP
 	pre_reload_hook
-	/usr/sbin/openwisp-reload-config
+	without_sigusr /usr/sbin/openwisp-reload-config
 	sleep "$POST_RELOAD_DELAY"
 	post_reload_hook
 	logger -s "The most recent configuration backup was restored" \
